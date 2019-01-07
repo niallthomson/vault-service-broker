@@ -16,27 +16,49 @@ import (
 )
 
 const (
-	// DefaultListenAddr is the default address unless we get
-	// an override via PORT
-	DefaultListenAddr = ":8000"
+	// REQUIRED CONFIG PARAMETERS
+	SecurityUserName = "SECURITY_USER_NAME"
+	SecurityUserPassword = "SECURITY_USER_PASSWORD"
+	VaultToken = "VAULT_TOKEN"
 
-	// DefaultServiceID is the default UUID of the services
+	// OPTIONAL CONFIG PARAMETERS
+	Port = "PORT"
+	DefaultPort = ":8000"
+
+	// ServiceID is the UUID of the services
+	ServiceID = "SERVICE_ID"
 	DefaultServiceID = "0654695e-0760-a1d4-1cad-5dd87b75ed99"
 
-	// DefaultVaultAddr is the default address to the Vault cluster.
+	// VaultAddr is the address of the Vault cluster that this service broker should use
+	VaultAddr = "VAULT_ADDR"
 	DefaultVaultAddr = "https://127.0.0.1:8200"
 
-	// DefaultServiceName is the name of the service in the marketplace
+	// VaultAdvertiseAddr is the address that OTHERS (users) should use to access Vault
+	// It defaults to the VaultAddr if not provided.
+	VaultAdvertiseAddr = "VAULT_ADVERTISE_ADDR"
+
+	// ServiceName is the name of the service in the marketplace
+	ServiceName = "SERVICE_NAME"
 	DefaultServiceName = "hashicorp-vault"
 
-	// DefaultServiceDescription is the default service description.
+	// ServiceDescription is the service description in the marketplace
+	ServiceDescription = "SERVICE_DESCRIPTION"
 	DefaultServiceDescription = "HashiCorp Vault Service Broker"
 
-	// DefaultPlanName is the name of our plan, only one supported
+	// PlanName is the name of our plan, only one is supported
+	PlanName = "PLAN_NAME"
 	DefaultPlanName = "shared"
 
-	// DefaultPlanDescription is the default description.
+	// PlanDescription is the plan's description
+	PlanDescription = "PLAN_DESCRIPTION"
 	DefaultPlanDescription = "Secure access to Vault's storage and transit backends"
+
+	// These are optional; if not provided, none will be added
+	ServiceTags = "SERVICE_TAGS"
+
+	// Denotes whether the service broker should automatically renew the service broker's token
+	VaultRenew = "VAULT_RENEW"
+	DefaultVaultRenew = true
 )
 
 func main() {
@@ -45,52 +67,52 @@ func main() {
 	logger := log.New(os.Stdout, "", 0)
 
 	// Ensure username and password are present
-	username := os.Getenv("SECURITY_USER_NAME")
+	username := os.Getenv(SecurityUserName)
 	if username == "" {
-		logger.Fatal("[ERR] missing SECURITY_USER_NAME")
+		logger.Fatalf("[ERR] missing %s", SecurityUserName)
 	}
-	password := os.Getenv("SECURITY_USER_PASSWORD")
+	password := os.Getenv(SecurityUserPassword)
 	if password == "" {
-		logger.Fatal("[ERR] missing SECURITY_USER_PASSWORD")
+		logger.Fatalf("[ERR] missing %s", SecurityUserPassword)
 	}
 
 	// Get a custom GUID
-	serviceID := os.Getenv("SERVICE_ID")
+	serviceID := os.Getenv(ServiceID)
 	if serviceID == "" {
 		serviceID = DefaultServiceID
 	}
 
 	// Get the service name
-	serviceName := os.Getenv("SERVICE_NAME")
+	serviceName := os.Getenv(ServiceName)
 	if serviceName == "" {
 		serviceName = DefaultServiceName
 	}
 
 	// Get the service description
-	serviceDescription := os.Getenv("SERVICE_DESCRIPTION")
+	serviceDescription := os.Getenv(ServiceDescription)
 	if serviceDescription == "" {
 		serviceDescription = DefaultServiceDescription
 	}
 
 	// Get the service tags
-	serviceTags := strings.Split(os.Getenv("SERVICE_TAGS"), ",")
+	serviceTags := strings.Split(os.Getenv(ServiceTags), ",")
 
 	// Get the plan name
-	planName := os.Getenv("PLAN_NAME")
+	planName := os.Getenv(PlanName)
 	if planName == "" {
 		planName = DefaultPlanName
 	}
 
 	// Get the plan description
-	planDescription := os.Getenv("PLAN_DESCRIPTION")
+	planDescription := os.Getenv(PlanDescription)
 	if planDescription == "" {
 		planDescription = DefaultPlanDescription
 	}
 
 	// Parse the port
-	port := os.Getenv("PORT")
+	port := os.Getenv(Port)
 	if port == "" {
-		port = DefaultListenAddr
+		port = DefaultPort
 	} else {
 		if port[0] != ':' {
 			port = ":" + port
@@ -98,31 +120,31 @@ func main() {
 	}
 
 	// Check for vault address
-	vaultAddr := os.Getenv("VAULT_ADDR")
+	vaultAddr := os.Getenv(VaultAddr)
 	if vaultAddr == "" {
 		vaultAddr = DefaultVaultAddr
 	}
-	os.Setenv("VAULT_ADDR", normalizeAddr(vaultAddr))
+	os.Setenv(VaultAddr, normalizeAddr(vaultAddr))
 
 	// Get the vault advertise addr
-	vaultAdvertiseAddr := os.Getenv("VAULT_ADVERTISE_ADDR")
+	vaultAdvertiseAddr := os.Getenv(VaultAdvertiseAddr)
 	if vaultAdvertiseAddr == "" {
 		vaultAdvertiseAddr = normalizeAddr(vaultAddr)
 	}
 
 	// Check if renewal is enabled
-	renew := true
-	if s := os.Getenv("VAULT_RENEW"); s != "" {
+	renew := DefaultVaultRenew
+	if s := os.Getenv(VaultRenew); s != "" {
 		b, err := strconv.ParseBool(s)
 		if err != nil {
-			logger.Fatalf("[ERR] failed to parse VAULT_RENEW: %s", err)
+			logger.Fatalf("[ERR] failed to parse %s: %s", VaultRenew, err)
 		}
 		renew = b
 	}
 
 	// Check for vault token
-	if v := os.Getenv("VAULT_TOKEN"); v == "" {
-		logger.Fatal("[ERR] missing VAULT_TOKEN")
+	if v := os.Getenv(VaultToken); v == "" {
+		logger.Fatalf("[ERR] missing %s", VaultToken)
 	}
 
 	// Setup the vault client
