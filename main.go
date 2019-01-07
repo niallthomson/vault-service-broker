@@ -58,15 +58,16 @@ const (
 
 	// Denotes whether the service broker should automatically renew the service broker's token
 	VaultRenew = "VAULT_RENEW"
-	DefaultVaultRenew = true
+	DefaultVaultRenew = "true"
 )
+
 
 func main() {
 	// Setup the logger - intentionally do not log date or time because it will
 	// be prefixed in the log output by CF.
 	logger := log.New(os.Stdout, "", 0)
 
-	// Ensure username and password are present
+	// Parse required settings
 	username := os.Getenv(SecurityUserName)
 	if username == "" {
 		logger.Fatalf("[ERR] missing %s", SecurityUserName)
@@ -75,76 +76,26 @@ func main() {
 	if password == "" {
 		logger.Fatalf("[ERR] missing %s", SecurityUserPassword)
 	}
-
-	// Get a custom GUID
-	serviceID := os.Getenv(ServiceID)
-	if serviceID == "" {
-		serviceID = DefaultServiceID
-	}
-
-	// Get the service name
-	serviceName := os.Getenv(ServiceName)
-	if serviceName == "" {
-		serviceName = DefaultServiceName
-	}
-
-	// Get the service description
-	serviceDescription := os.Getenv(ServiceDescription)
-	if serviceDescription == "" {
-		serviceDescription = DefaultServiceDescription
-	}
-
-	// Get the service tags
-	serviceTags := strings.Split(os.Getenv(ServiceTags), ",")
-
-	// Get the plan name
-	planName := os.Getenv(PlanName)
-	if planName == "" {
-		planName = DefaultPlanName
-	}
-
-	// Get the plan description
-	planDescription := os.Getenv(PlanDescription)
-	if planDescription == "" {
-		planDescription = DefaultPlanDescription
-	}
-
-	// Parse the port
-	port := os.Getenv(Port)
-	if port == "" {
-		port = DefaultPort
-	} else {
-		if port[0] != ':' {
-			port = ":" + port
-		}
-	}
-
-	// Check for vault address
-	vaultAddr := os.Getenv(VaultAddr)
-	if vaultAddr == "" {
-		vaultAddr = DefaultVaultAddr
-	}
-	os.Setenv(VaultAddr, normalizeAddr(vaultAddr))
-
-	// Get the vault advertise addr
-	vaultAdvertiseAddr := os.Getenv(VaultAdvertiseAddr)
-	if vaultAdvertiseAddr == "" {
-		vaultAdvertiseAddr = normalizeAddr(vaultAddr)
-	}
-
-	// Check if renewal is enabled
-	renew := DefaultVaultRenew
-	if s := os.Getenv(VaultRenew); s != "" {
-		b, err := strconv.ParseBool(s)
-		if err != nil {
-			logger.Fatalf("[ERR] failed to parse %s: %s", VaultRenew, err)
-		}
-		renew = b
-	}
-
-	// Check for vault token
 	if v := os.Getenv(VaultToken); v == "" {
 		logger.Fatalf("[ERR] missing %s", VaultToken)
+	}
+
+	// Parse optional settings
+	serviceID := getOrDefault(ServiceID, DefaultServiceID)
+	serviceName := getOrDefault(ServiceName, DefaultServiceName)
+	serviceDescription := getOrDefault(ServiceDescription, DefaultServiceDescription)
+	planName := getOrDefault(PlanName, DefaultPlanName)
+	planDescription := getOrDefault(PlanDescription, DefaultPlanDescription)
+	serviceTags := strings.Split(os.Getenv(ServiceTags), ",")
+	vaultAddr := normalizeAddr(getOrDefault(VaultAddr, DefaultVaultAddr))
+	vaultAdvertiseAddr := getOrDefault(VaultAdvertiseAddr, vaultAddr)
+	port := getOrDefault(Port, DefaultPort)
+	if port[0] != ':' {
+		port = ":" + port
+	}
+	renew, err := strconv.ParseBool(getOrDefault(VaultRenew, DefaultVaultRenew))
+	if err != nil {
+		logger.Fatalf("[ERR] failed to parse %s: %s", VaultRenew, err)
 	}
 
 	// Setup the vault client
@@ -249,4 +200,11 @@ func normalizeAddr(s string) string {
 	u.Path = strings.TrimRight(u.Path, "/") + "/"
 
 	return u.String()
+}
+
+func getOrDefault(settingName, settingDefault string) string {
+	if settingValue := os.Getenv(settingName); settingValue != "" {
+		return settingValue
+	}
+	return settingDefault
 }
