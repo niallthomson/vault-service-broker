@@ -220,29 +220,35 @@ type settingHandler struct {
 }
 
 func (h *settingHandler) GetOrDefault(settingName, settingDefault string) string {
-	if h.credhubClient != nil {
-		latest, err := h.credhubClient.GetLatestByName(CredhubPrefix + settingName)
-		if err != nil {
-			// "Name Not Found" is returned when the CredHub API returns a 404.
-			// It's not ideal that we need to match a string
-			// but there's nothing better to check against.
-			// In case the error string changes slightly with future SDK versions,
-			// we match flexibly.
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				// This variable isn't stored in CredHub, see if it's an env variable.
-				goto CheckEnv
-			}
-			h.logger.Fatalf("error pulling settings from credhub: %s", err)
-		}
-		settingValue, ok := latest.Value.(string)
-		if !ok {
-			h.logger.Fatalf("we only support credhub values as string, but received %s as a %s", settingName, reflect.TypeOf(latest.Value))
-		}
-		if settingValue != "" {
-			return settingValue
-		}
+	if h.credhubClient == nil {
+		return h.checkEnv(settingName, settingDefault)
 	}
-CheckEnv:
+
+	latest, err := h.credhubClient.GetLatestByName(CredhubPrefix + settingName)
+	if err != nil {
+		// "Name Not Found" is returned when the CredHub API returns a 404.
+		// It's not ideal that we need to match a string
+		// but there's nothing better to check against.
+		// In case the error string changes slightly with future SDK versions,
+		// we match flexibly.
+		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+			// This variable isn't stored in CredHub, see if it's an env variable.
+			return h.checkEnv(settingName, settingDefault)
+		}
+		// Otherwise, this is a real error.
+		h.logger.Fatalf("error pulling settings from credhub: %s", err)
+	}
+	settingValue, ok := latest.Value.(string)
+	if !ok {
+		h.logger.Fatalf("we only support credhub values as string, but received %s as a %s", settingName, reflect.TypeOf(latest.Value))
+	}
+	if settingValue != "" {
+		return settingValue
+	}
+	return h.checkEnv(settingName, settingDefault)
+}
+
+func (h *settingHandler) checkEnv(settingName, settingDefault string) string {
 	if settingValue := os.Getenv(settingName); settingValue != "" {
 		return settingValue
 	}
