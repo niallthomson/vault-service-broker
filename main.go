@@ -6,102 +6,106 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
 
 	"code.cloudfoundry.org/lager"
+	"github.com/cloudfoundry-community/go-credhub"
+	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/vault/api"
 	"github.com/pivotal-cf/brokerapi"
 )
 
 const (
+	// If settings are stored in CredHub, the prefix for all relevant settings.
+	// For example: VAULT_SERVICE_BROKER_SECURITY_USER_NAME
+	CredhubPrefix = "VAULT_SERVICE_BROKER_"
+
 	// REQUIRED CONFIG PARAMETERS
-	SecurityUserName = "SECURITY_USER_NAME"
+	SecurityUserName     = "SECURITY_USER_NAME"
 	SecurityUserPassword = "SECURITY_USER_PASSWORD"
-	VaultToken = "VAULT_TOKEN"
+	VaultToken           = "VAULT_TOKEN"
 
 	// OPTIONAL CONFIG PARAMETERS
-	Port = "PORT"
+	CredhubURL = "CREDHUB_URL"
+
+	Port        = "PORT"
 	DefaultPort = ":8000"
 
 	// ServiceID is the UUID of the services
-	ServiceID = "SERVICE_ID"
+	ServiceID        = "SERVICE_ID"
 	DefaultServiceID = "0654695e-0760-a1d4-1cad-5dd87b75ed99"
 
-	// VaultAddr is the address of the Vault cluster that this service broker should use
-	VaultAddr = "VAULT_ADDR"
-	DefaultVaultAddr = "https://127.0.0.1:8200"
-
-	// VaultAdvertiseAddr is the address that OTHERS (users) should use to access Vault
-	// It defaults to the VaultAddr if not provided.
+	// VaultAdvertiseAddr is the address of the Vault cluster that this service broker should use,
+	// and that should be used by USERS of the service broker.
+	// If it's unset, it'll fall back to the VaultAddr. It's not necessary to have both,
+	// but previous code was written this way and they're both retained for backwards compatibility.
+	VaultAddr          = "VAULT_ADDR"
+	DefaultVaultAddr   = "https://127.0.0.1:8200"
 	VaultAdvertiseAddr = "VAULT_ADVERTISE_ADDR"
 
 	// ServiceName is the name of the service in the marketplace
-	ServiceName = "SERVICE_NAME"
+	ServiceName        = "SERVICE_NAME"
 	DefaultServiceName = "hashicorp-vault"
 
 	// ServiceDescription is the service description in the marketplace
-	ServiceDescription = "SERVICE_DESCRIPTION"
+	ServiceDescription        = "SERVICE_DESCRIPTION"
 	DefaultServiceDescription = "HashiCorp Vault Service Broker"
 
 	// PlanName is the name of our plan, only one is supported
-	PlanName = "PLAN_NAME"
+	PlanName        = "PLAN_NAME"
 	DefaultPlanName = "shared"
 
 	// PlanDescription is the plan's description
-	PlanDescription = "PLAN_DESCRIPTION"
+	PlanDescription        = "PLAN_DESCRIPTION"
 	DefaultPlanDescription = "Secure access to Vault's storage and transit backends"
 
 	// These are optional; if not provided, none will be added
 	ServiceTags = "SERVICE_TAGS"
 
 	// Denotes whether the service broker should automatically renew the service broker's token
-	VaultRenew = "VAULT_RENEW"
+	VaultRenew        = "VAULT_RENEW"
 	DefaultVaultRenew = "true"
 )
 
-
 func main() {
 	// Setup the logger - intentionally do not log date or time because it will
-	// be prefixed in the log output by CF.
+	// be prefixed in the log output by CF
 	logger := log.New(os.Stdout, "", 0)
 
+	h := newSettingHandler(logger, os.Getenv(CredhubURL))
+
 	// Parse required settings
-	username := os.Getenv(SecurityUserName)
+	username := h.GetOrDefault(SecurityUserName, "")
 	if username == "" {
 		logger.Fatalf("[ERR] missing %s", SecurityUserName)
 	}
-	password := os.Getenv(SecurityUserPassword)
+	password := h.GetOrDefault(SecurityUserPassword, "")
 	if password == "" {
 		logger.Fatalf("[ERR] missing %s", SecurityUserPassword)
 	}
-	if v := os.Getenv(VaultToken); v == "" {
+	if vaultToken := h.GetOrDefault(VaultToken, ""); vaultToken == "" {
 		logger.Fatalf("[ERR] missing %s", VaultToken)
 	}
 
 	// Parse optional settings
-	serviceID := getOrDefault(ServiceID, DefaultServiceID)
-	serviceName := getOrDefault(ServiceName, DefaultServiceName)
-	serviceDescription := getOrDefault(ServiceDescription, DefaultServiceDescription)
-	planName := getOrDefault(PlanName, DefaultPlanName)
-	planDescription := getOrDefault(PlanDescription, DefaultPlanDescription)
-	serviceTags := strings.Split(os.Getenv(ServiceTags), ",")
-	vaultAddr := normalizeAddr(getOrDefault(VaultAddr, DefaultVaultAddr))
-	vaultAdvertiseAddr := getOrDefault(VaultAdvertiseAddr, vaultAddr)
-	port := getOrDefault(Port, DefaultPort)
+	vaultAddr := normalizeAddr(h.GetOrDefault(VaultAddr, DefaultVaultAddr))
+	vaultAdvertiseAddr := h.GetOrDefault(VaultAdvertiseAddr, vaultAddr)
+	port := h.GetOrDefault(Port, DefaultPort)
 	if port[0] != ':' {
 		port = ":" + port
 	}
-	renew, err := strconv.ParseBool(getOrDefault(VaultRenew, DefaultVaultRenew))
+	renew, err := strconv.ParseBool(h.GetOrDefault(VaultRenew, DefaultVaultRenew))
 	if err != nil {
 		logger.Fatalf("[ERR] failed to parse %s: %s", VaultRenew, err)
 	}
 
-	// Setup the vault client
+	// Setup the vault vaultClient
 	client, err := api.NewClient(nil)
 	if err != nil {
-		logger.Fatal("[ERR] failed to create api client", err)
+		logger.Fatal("[ERR] failed to create api vaultClient", err)
 	}
 
 	// Setup the broker
@@ -109,13 +113,13 @@ func main() {
 		log:    logger,
 		client: client,
 
-		serviceID:          serviceID,
-		serviceName:        serviceName,
-		serviceDescription: serviceDescription,
-		serviceTags:        serviceTags,
+		serviceID:          h.GetOrDefault(ServiceID, DefaultServiceID),
+		serviceName:        h.GetOrDefault(ServiceName, DefaultServiceName),
+		serviceDescription: h.GetOrDefault(ServiceDescription, DefaultServiceDescription),
+		serviceTags:        strings.Split(os.Getenv(ServiceTags), ","),
 
-		planName:        planName,
-		planDescription: planDescription,
+		planName:        h.GetOrDefault(PlanName, DefaultPlanName),
+		planDescription: h.GetOrDefault(PlanDescription, DefaultPlanDescription),
 
 		vaultAdvertiseAddr: vaultAdvertiseAddr,
 		vaultRenewToken:    renew,
@@ -202,7 +206,43 @@ func normalizeAddr(s string) string {
 	return u.String()
 }
 
-func getOrDefault(settingName, settingDefault string) string {
+func newSettingHandler(logger *log.Logger, credhubURL string) *settingHandler {
+	// TODO client authorization? Should I assume I don't need to worry about this if they've set up certs correctly?
+	if credhubURL == "" {
+		return &settingHandler{logger, nil}
+	}
+	return &settingHandler{logger, credhub.New(credhubURL, cleanhttp.DefaultClient())}
+}
+
+type settingHandler struct {
+	logger        *log.Logger
+	credhubClient *credhub.Client
+}
+
+func (h *settingHandler) GetOrDefault(settingName, settingDefault string) string {
+	if h.credhubClient != nil {
+		latest, err := h.credhubClient.GetLatestByName(CredhubPrefix + settingName)
+		if err != nil {
+			// "Name Not Found" is returned when the CredHub API returns a 404.
+			// It's not ideal that we need to match a string
+			// but there's nothing better to check against.
+			// In case the error string changes slightly with future SDK versions,
+			// we match flexibly.
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				// This variable isn't stored in CredHub, see if it's an env variable.
+				goto CheckEnv
+			}
+			h.logger.Fatalf("error pulling settings from credhub: %s", err)
+		}
+		settingValue, ok := latest.Value.(string)
+		if !ok {
+			h.logger.Fatalf("we only support credhub values as string, but received %s as a %s", settingName, reflect.TypeOf(latest.Value))
+		}
+		if settingValue != "" {
+			return settingValue
+		}
+	}
+CheckEnv:
 	if settingValue := os.Getenv(settingName); settingValue != "" {
 		return settingValue
 	}

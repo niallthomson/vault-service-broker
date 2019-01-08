@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"testing"
 )
 
@@ -56,23 +55,5 @@ func TestNormalizeAddr(t *testing.T) {
 				t.Errorf("expected %q to be %q", r, tc.e)
 			}
 		})
-	}
-}
-
-func TestGetOrDefault(t *testing.T) {
-	settingName := "FIZZ"
-	settingDefault := "buzz"
-	settingValue := "bang"
-
-	result := getOrDefault(settingName, settingDefault)
-	if result != settingDefault {
-		t.Fatalf("expected %s but received %s", settingDefault, result)
-	}
-
-	os.Setenv(settingName, settingValue)
-	defer os.Unsetenv(settingName)
-	result = getOrDefault(settingName, settingDefault)
-	if result != settingValue {
-		t.Fatalf("expected %s but received %s", settingValue, result)
 	}
 }
