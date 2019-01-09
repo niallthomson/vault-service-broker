@@ -28,7 +28,7 @@ func main() {
 
 	config, err := parseConfig()
 	if err != nil {
-		logger.Fatalf("failed to parse configuration: %s", err)
+		logger.Fatal("[ERR] failed to read configuration", err)
 	}
 
 	// Setup the vault vaultClient
