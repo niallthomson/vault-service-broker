@@ -475,6 +475,25 @@ currently recognizes the following.
 
 - `SECURITY_USER_PASSWORD` - (default: none) - password for basic auth
 
+### Providing Configuration Through CredHub
+
+Any of the Vault Service Broker's environment variables can be set through CredHub.
+To do so, add the following configuration parameter:
+
+- `CREDHUB_URL` (default: none) - CredHub's base URL (ex. "https://example.com")
+
+Once this is set, Vault will check CredHub for all environment variables listed above.
+All variables must be prefixed with "VAULT_SERVICE_BROKER_". For example:
+
+- `VAULT_SERVICE_BROKER_SECURITY_USER_PASSWORD`: "$ecure_pa$$w0rd"
+- `VAULT_SERVICE_BROKER_VAULT_RENEW`: "false"
+- `VAULT_SERVICE_BROKER_SERVICE_TAGS`: "production,security"
+
+Please keep the following in mind:
+- You may set configuration through both CredHub and environment variables
+- CredHub is preferred, so if a variable exists in both places, the CredHub value will prevail
+- The values for the CredHub variables must be given as strings in the same format as you would an environment variable
+
 ### Granting Access to Other Paths
 
 The service broker has an opinionated setup of policies and mounts to provide a
