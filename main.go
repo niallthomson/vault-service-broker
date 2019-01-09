@@ -26,21 +26,9 @@ func main() {
 	// be prefixed in the log output by CF
 	logger := log.New(os.Stdout, "", 0)
 
-	// Parse the config from the environment
-	config := &Configuration{}
-	if err := envconfig.Process("", config); err != nil {
-		log.Fatalf("failed to parse environment variables: %s", err)
-	}
-
-	if config.CredhubURL != "" {
-		// Override env vars with anything set in credhub
-		if err := credhubProcess("VAULT_SERVICE_BROKER_", config); err != nil {
-			log.Fatalf("failed to parse credhub settings: %s", err)
-		}
-	}
-
-	if err := config.Validate(); err != nil {
-		logger.Fatalf("[ERR] config validation failed: %s", err)
+	config, err := parseConfig()
+	if err != nil {
+		logger.Fatalf("failed to parse configuration: %s", err)
 	}
 
 	// Setup the vault vaultClient
@@ -147,6 +135,23 @@ func normalizeAddr(s string) string {
 	return u.String()
 }
 
+// parseConfig is broken into its own function for testability
+func parseConfig() (*Configuration, error) {
+	config := &Configuration{}
+	if err := envconfig.Process("", config); err != nil {
+		return nil, err
+	}
+	if config.CredhubURL != "" {
+		if err := credhubProcess("VAULT_SERVICE_BROKER_", config); err != nil {
+			return nil, err
+		}
+	}
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+	return config, nil
+}
+
 type Configuration struct {
 	// Required
 	SecurityUserName string `envconfig:"security_user_name"`
@@ -154,17 +159,17 @@ type Configuration struct {
 	VaultToken       string `envconfig:"vault_token"`
 
 	// Optional
-	CredhubURL         string     `envconfig:"credhub_url"`
-	Port               string     `envconfig:"port" default:":8000"`
-	ServiceID          string     `envconfig:"service_id" default:"0654695e-0760-a1d4-1cad-5dd87b75ed99"`
-	VaultAddr          string     `envconfig:"vault_addr" default:"https://127.0.0.1:8200"`
-	VaultAdvertiseAddr string     `envconfig:"vault_advertise_addr"`
-	ServiceName        string     `envconfig:"service_name" default:"hashicorp-vault"`
-	ServiceDescription string     `envconfig:"service_description" default:"HashiCorp Vault Service Broker"`
-	PlanName           string     `envconfig:"plan_name" default:"shared"`
-	PlanDescription    string     `envconfig:"plan_description" default:"Secure access to Vault's storage and transit backends"`
-	ServiceTags        []string   `envconfig:"service_tags"`
-	VaultRenew         bool       `envconfig:"vault_renew" default:"true"`
+	CredhubURL         string   `envconfig:"credhub_url"`
+	Port               string   `envconfig:"port" default:":8000"`
+	ServiceID          string   `envconfig:"service_id" default:"0654695e-0760-a1d4-1cad-5dd87b75ed99"`
+	VaultAddr          string   `envconfig:"vault_addr" default:"https://127.0.0.1:8200"`
+	VaultAdvertiseAddr string   `envconfig:"vault_advertise_addr"`
+	ServiceName        string   `envconfig:"service_name" default:"hashicorp-vault"`
+	ServiceDescription string   `envconfig:"service_description" default:"HashiCorp Vault Service Broker"`
+	PlanName           string   `envconfig:"plan_name" default:"shared"`
+	PlanDescription    string   `envconfig:"plan_description" default:"Secure access to Vault's storage and transit backends"`
+	ServiceTags        []string `envconfig:"service_tags"`
+	VaultRenew         bool     `envconfig:"vault_renew" default:"true"`
 }
 
 func (c *Configuration) Validate() error {
@@ -198,15 +203,17 @@ func credhubProcess(prefix string, config *Configuration) error {
 	// Pull the "envconfig" field name from each field and look for it in Credhub
 	configTypeInfo := reflect.TypeOf(*config)
 	settableConfig := reflect.ValueOf(config).Elem()
+
 	for i := 0; i < configTypeInfo.NumField(); i++ {
 		fieldTypeInfo := configTypeInfo.Field(i)
-
 		credhubName := prefix + strings.ToUpper(fieldTypeInfo.Tag.Get("envconfig"))
+
 		latest, err := client.GetLatestByName(credhubName)
 		if err != nil && !strings.Contains(strings.ToLower(err.Error()), "not found") {
 			return err
 		}
 		if latest == nil {
+			// This key doesn't exist in Credhub
 			continue
 		}
 		settingValue, ok := latest.Value.(string)
@@ -214,9 +221,11 @@ func credhubProcess(prefix string, config *Configuration) error {
 			return fmt.Errorf("we only support credhub values as bash-like string values, but received %s as a %s", credhubName, reflect.TypeOf(latest.Value))
 		}
 		if settingValue == "" {
+			// The value for this key isn't set in Credhub
 			continue
 		}
 
+		// Update the value for this field with Credhub's value
 		settableField := settableConfig.Field(i)
 		switch fieldTypeInfo.Type.Kind() {
 		case reflect.Bool:
