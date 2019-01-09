@@ -34,7 +34,7 @@ func main() {
 	// Setup the vault vaultClient
 	client, err := api.NewClient(nil)
 	if err != nil {
-		logger.Fatal("[ERR] failed to create api vaultClient", err)
+		logger.Fatal("[ERR] failed to create api client", err)
 	}
 
 	// Setup the broker
@@ -60,7 +60,7 @@ func main() {
 	// Parse the broker credentials
 	creds := brokerapi.BrokerCredentials{
 		Username: config.SecurityUserName,
-		Password: config.SecurityPassword,
+		Password: config.SecurityUserPassword,
 	}
 
 	// Setup the HTTP handler
@@ -154,9 +154,9 @@ func parseConfig() (*Configuration, error) {
 
 type Configuration struct {
 	// Required
-	SecurityUserName string `envconfig:"security_user_name"`
-	SecurityPassword string `envconfig:"security_user_password"`
-	VaultToken       string `envconfig:"vault_token"`
+	SecurityUserName     string `envconfig:"security_user_name"`
+	SecurityUserPassword string `envconfig:"security_user_password"`
+	VaultToken           string `envconfig:"vault_token"`
 
 	// Optional
 	CredhubURL         string   `envconfig:"credhub_url"`
@@ -177,7 +177,7 @@ func (c *Configuration) Validate() error {
 	if c.SecurityUserName == "" {
 		return errors.New("missing SECURITY_USER_NAME")
 	}
-	if c.SecurityPassword == "" {
+	if c.SecurityUserPassword == "" {
 		return errors.New("missing SECURITY_USER_PASSWORD")
 	}
 	if c.VaultToken == "" {
