@@ -23,7 +23,7 @@ import (
 
 func main() {
 	// Setup the logger - intentionally do not log date or time because it will
-	// be prefixed in the log output by CF
+	// be prefixed in the log output by CF.
 	logger := log.New(os.Stdout, "", 0)
 
 	config, err := parseConfig()
@@ -31,7 +31,7 @@ func main() {
 		logger.Fatal("[ERR] failed to read configuration", err)
 	}
 
-	// Setup the vault vaultClient
+	// Setup the vault client
 	client, err := api.NewClient(nil)
 	if err != nil {
 		logger.Fatal("[ERR] failed to create api client", err)
