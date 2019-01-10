@@ -32,10 +32,15 @@ func main() {
 	}
 
 	// Setup the vault client
-	client, err := api.NewClient(nil)
+	vaultClientConfig := api.DefaultConfig()
+	vaultClientConfig.HttpClient = cleanhttp.DefaultClient()
+
+	client, err := api.NewClient(vaultClientConfig)
 	if err != nil {
 		logger.Fatal("[ERR] failed to create api client", err)
 	}
+	client.SetAddress(config.VaultAddr)
+	client.SetToken(config.VaultToken)
 
 	// Setup the broker
 	broker := &Broker{
