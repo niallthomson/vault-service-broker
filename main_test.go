@@ -62,7 +62,7 @@ func TestNormalizeAddr(t *testing.T) {
 }
 
 func TestParseConfigDefaults(t *testing.T) {
-	ensureEnvVarsAreUnset()
+	os.Clearenv()
 
 	os.Setenv("SECURITY_USER_NAME", "fizz")
 	os.Setenv("SECURITY_USER_PASSWORD", "buzz")
@@ -117,7 +117,7 @@ func TestParseConfigDefaults(t *testing.T) {
 }
 
 func TestParseConfigFromEnv(t *testing.T) {
-	ensureEnvVarsAreUnset()
+	os.Clearenv()
 
 	os.Setenv("SECURITY_USER_NAME", "fizz")
 	os.Setenv("SECURITY_USER_PASSWORD", "buzz")
@@ -183,7 +183,7 @@ func TestParseConfigFromEnv(t *testing.T) {
 }
 
 func TestParseConfigFromCredhub(t *testing.T) {
-	ensureEnvVarsAreUnset()
+	os.Clearenv()
 
 	ts := testCredhubServer()
 	defer ts.Close()
@@ -239,7 +239,7 @@ func TestParseConfigFromCredhub(t *testing.T) {
 }
 
 func TestCredhubConfigOverridesEnvConfig(t *testing.T) {
-	ensureEnvVarsAreUnset()
+	os.Clearenv()
 
 	os.Setenv("SECURITY_USER_NAME", "fizz")
 	os.Setenv("SECURITY_USER_PASSWORD", "buzz")
@@ -307,23 +307,6 @@ func TestCredhubConfigOverridesEnvConfig(t *testing.T) {
 	if config.VaultRenew != false {
 		t.Fatal("expected false but received true")
 	}
-}
-
-func ensureEnvVarsAreUnset() {
-	os.Unsetenv("SECURITY_USER_NAME")
-	os.Unsetenv("SECURITY_USER_PASSWORD")
-	os.Unsetenv("VAULT_TOKEN")
-	os.Unsetenv("CREDHUB_URL")
-	os.Unsetenv("PORT")
-	os.Unsetenv("SERVICE_ID")
-	os.Unsetenv("VAULT_ADDR")
-	os.Unsetenv("VAULT_ADVERTISE_ADDR")
-	os.Unsetenv("SERVICE_NAME")
-	os.Unsetenv("SERVICE_DESCRIPTION")
-	os.Unsetenv("PLAN_NAME")
-	os.Unsetenv("PLAN_DESCRIPTION")
-	os.Unsetenv("SERVICE_TAGS")
-	os.Unsetenv("VAULT_RENEW")
 }
 
 func testCredhubServer() *httptest.Server {
