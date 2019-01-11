@@ -34,6 +34,28 @@ type bindingInfo struct {
 	stopCh       chan struct{}
 }
 
+type instanceInfo struct {
+	OrganizationName string
+	OrganizationGUID    string
+	SpaceName string
+	SpaceGUID           string
+	ServiceInstanceName string
+	ServiceInstanceGUID string
+}
+
+func (i *instanceInfo) NamesPopulated() bool {
+	if i.OrganizationName == "" {
+		return false
+	}
+	if i.SpaceName == "" {
+		return false
+	}
+	if i.ServiceInstanceName == "" {
+		return false
+	}
+	return true
+}
+
 type Broker struct {
 	log         *log.Logger
 	vaultClient *api.Client
@@ -65,7 +87,7 @@ type Broker struct {
 	bindLock sync.Mutex
 
 	// instances is used to map instances to their space and org GUID.
-	instances     map[string]*Details
+	instances     map[string]*instanceInfo
 	instancesLock sync.Mutex
 
 	// stopLock, stopped, and stopCh are used to control the stopping behavior of
@@ -103,7 +125,7 @@ func (b *Broker) Start() error {
 
 	// Ensure instances is initialized
 	if b.instances == nil {
-		b.instances = make(map[string]*Details)
+		b.instances = make(map[string]*instanceInfo)
 	}
 
 	// Ensure the generic secret backend at cf/broker is mounted.
@@ -169,7 +191,7 @@ func (b *Broker) restoreInstance(instanceID string) error {
 
 	// Decode the binding info
 	b.log.Printf("[DEBUG] decoding bind data from %s", path)
-	info, err := decodeDetails(secret.Data)
+	info, err := decodeInstanceInfo(secret.Data)
 	if err != nil {
 		return errors.Wrapf(err, "failed to decode instance info for %s", path)
 	}
@@ -291,55 +313,55 @@ func (b *Broker) Services(ctx context.Context) []brokerapi.Service {
 // a token role called "cf-instanceID" which is periodic. Lastly, we mount
 // the backends for the instance, and optionally for the space and org if
 // they do not exist yet.
-func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDetails brokerapi.ProvisionDetails, async bool) (brokerapi.ProvisionedServiceSpec, error) {
+func (b *Broker) Provision(ctx context.Context, instanceID string, details brokerapi.ProvisionDetails, async bool) (brokerapi.ProvisionedServiceSpec, error) {
 	b.log.Printf("[INFO] provisioning instance %s in %s/%s",
-		instanceID, provisionDetails.OrganizationGUID, provisionDetails.SpaceGUID)
+		instanceID, details.OrganizationGUID, details.SpaceGUID)
 
 	// Create the spec to return
 	var spec brokerapi.ProvisionedServiceSpec
 
-	details := &Details{
-		OrganizationGUID:    provisionDetails.OrganizationGUID,
-		SpaceGUID:           provisionDetails.SpaceGUID,
+	info := &instanceInfo{
+		OrganizationGUID:    details.OrganizationGUID,
+		SpaceGUID:           details.SpaceGUID,
 		ServiceInstanceGUID: instanceID,
 	}
 	if b.pcfClient != nil {
-		organization, err := b.pcfClient.GetOrgByGuid(details.OrganizationGUID)
+		organization, err := b.pcfClient.GetOrgByGuid(info.OrganizationGUID)
 		if err != nil {
 			return spec, err
 		}
-		details.OrganizationName = organization.Name
+		info.OrganizationName = organization.Name
 
-		space, err := b.pcfClient.GetSpaceByGuid(details.SpaceGUID)
+		space, err := b.pcfClient.GetSpaceByGuid(info.SpaceGUID)
 		if err != nil {
 			return spec, err
 		}
-		details.SpaceName = space.Name
+		info.SpaceName = space.Name
 
-		serviceInstance, err := b.pcfClient.GetServiceInstanceByGuid(details.ServiceInstanceGUID)
+		serviceInstance, err := b.pcfClient.GetServiceInstanceByGuid(info.ServiceInstanceGUID)
 		if err != nil {
 			return spec, err
 		}
-		details.ServiceInstanceName = serviceInstance.Name
+		info.ServiceInstanceName = serviceInstance.Name
 	}
 
 	// Generate the new policy
 	var buf bytes.Buffer
 
-	b.log.Printf("[DEBUG] generating policy for %s", details.ServiceInstanceGUID)
-	if err := GeneratePolicy(&buf, details); err != nil {
-		return spec, b.wErrorf(err, "failed to generate policy for %s", details.ServiceInstanceGUID)
+	b.log.Printf("[DEBUG] generating policy for %s", info.ServiceInstanceGUID)
+	if err := GeneratePolicy(&buf, info); err != nil {
+		return spec, b.wErrorf(err, "failed to generate policy for %s", info.ServiceInstanceGUID)
 	}
 
 	// Create the new policy
-	policyName := "cf-" + details.ServiceInstanceGUID
+	policyName := "cf-" + info.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] creating new policy %s", policyName)
 	if err := b.vaultClient.Sys().PutPolicy(policyName, buf.String()); err != nil {
 		return spec, b.wErrorf(err, "failed to create policy %s", policyName)
 	}
 
 	// Create the new token role
-	path := "/auth/token/roles/cf-" + details.ServiceInstanceGUID
+	path := "/auth/token/roles/cf-" + info.ServiceInstanceGUID
 	data := map[string]interface{}{
 		"allowed_policies": policyName,
 		"period":           VaultPeriodicTTL,
@@ -351,7 +373,7 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDeta
 	}
 
 	// Determine the mounts we need
-	mounts := b.vaultMounts(details)
+	mounts := b.vaultMounts(info)
 
 	// Mount the backends
 	b.log.Printf("[DEBUG] creating mounts %s", mounts)
@@ -359,13 +381,13 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDeta
 		return spec, b.wErrorf(err, "failed to create mounts %s", mounts)
 	}
 
-	payload, err := json.Marshal(details)
+	payload, err := json.Marshal(info)
 	if err != nil {
 		return spec, b.wErrorf(err, "failed to encode instance json")
 	}
 
 	// Store the token and metadata in the generic secret backend
-	instancePath := "cf/broker/" + details.ServiceInstanceGUID
+	instancePath := "cf/broker/" + info.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] storing instance metadata at %s", instancePath)
 	if _, err := b.vaultClient.Logical().Write(instancePath, map[string]interface{}{
 		"json": string(payload),
@@ -374,35 +396,35 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDeta
 	}
 
 	// Save the instance
-	b.log.Printf("[DEBUG] saving instance %s to cache", details.ServiceInstanceGUID)
+	b.log.Printf("[DEBUG] saving instance %s to cache", info.ServiceInstanceGUID)
 	b.instancesLock.Lock()
-	b.instances[details.ServiceInstanceGUID] = details
+	b.instances[info.ServiceInstanceGUID] = info
 	b.instancesLock.Unlock()
 
 	// Done
 	return spec, nil
 }
 
-func (b *Broker) vaultMounts(details *Details) []*Mount {
+func (b *Broker) vaultMounts(info *instanceInfo) []*Mount {
 	// Add the default mounts.
 	mounts := []*Mount{
-		{Name: "", GUID: details.OrganizationGUID, Type: KV},
-		{Name: "", GUID: details.SpaceGUID, Type: KV},
-		{Name: "", GUID: details.ServiceInstanceGUID, Type: KV},
-		{Name: "", GUID: details.ServiceInstanceGUID, Type: Transit},
+		{Name: "", GUID: info.OrganizationGUID, Type: KV},
+		{Name: "", GUID: info.SpaceGUID, Type: KV},
+		{Name: "", GUID: info.ServiceInstanceGUID, Type: KV},
+		{Name: "", GUID: info.ServiceInstanceGUID, Type: Transit},
 	}
 
 	// If the client wasn't populated because it wasn't configured, we're done.
-	if !details.NamesPopulated() {
+	if !info.NamesPopulated() {
 		return mounts
 	}
 
 	// Add mounts that include those names.
 	return append(mounts, []*Mount{
-		{Name: details.OrganizationName, GUID: details.OrganizationGUID, Type: KV},
-		{Name: details.SpaceName, GUID: details.SpaceGUID, Type: KV},
-		{Name: details.ServiceInstanceName, GUID: details.ServiceInstanceGUID, Type: KV},
-		{Name: details.ServiceInstanceName, GUID: details.ServiceInstanceGUID, Type: Transit},
+		{Name: info.OrganizationName, GUID: info.OrganizationGUID, Type: KV},
+		{Name: info.SpaceName, GUID: info.SpaceGUID, Type: KV},
+		{Name: info.ServiceInstanceName, GUID: info.ServiceInstanceGUID, Type: KV},
+		{Name: info.ServiceInstanceName, GUID: info.ServiceInstanceGUID, Type: Transit},
 	}...)
 }
 
@@ -413,6 +435,14 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 
 	// Create the spec to return
 	var spec brokerapi.DeprovisionServiceSpec
+
+	b.instancesLock.Lock()
+	info, ok := b.instances[instanceID]
+	b.instancesLock.Unlock()
+	if !ok {
+		// Already deprovisioned
+		return spec, nil
+	}
 
 	// Unmount the backends
 	mounts := []*Mount{
@@ -434,30 +464,30 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 	}
 
 	// Delete the token role
-	path := "/auth/token/roles/cf-" + instanceID
+	path := "/auth/token/roles/cf-" + info.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] deleting token role %s", path)
 	if _, err := b.vaultClient.Logical().Delete(path); err != nil {
 		return spec, b.wErrorf(err, "failed to delete token role %s", path)
 	}
 
 	// Delete the token policy
-	policyName := "cf-" + instanceID
+	policyName := "cf-" + info.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] deleting policy %s", policyName)
 	if err := b.vaultClient.Sys().DeletePolicy(policyName); err != nil {
 		return spec, b.wErrorf(err, "failed to delete policy %s", policyName)
 	}
 
 	// Delete the instance info
-	instancePath := "cf/broker/" + instanceID
+	instancePath := "cf/broker/" + info.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] deleting instance info at %s", instancePath)
 	if _, err := b.vaultClient.Logical().Delete(instancePath); err != nil {
 		return spec, b.wErrorf(err, "failed to delete instance info at %s", instancePath)
 	}
 
 	// Delete the instance from the map
-	b.log.Printf("[DEBUG] removing instance %s from cache", instanceID)
+	b.log.Printf("[DEBUG] removing instance %s from cache", info.ServiceInstanceGUID)
 	b.instancesLock.Lock()
-	delete(b.instances, instanceID)
+	delete(b.instances, info.ServiceInstanceGUID)
 	b.instancesLock.Unlock()
 
 	// Done!
@@ -773,7 +803,7 @@ func decodeBindingInfo(m map[string]interface{}) (*bindingInfo, error) {
 	return &info, nil
 }
 
-func decodeDetails(m map[string]interface{}) (*Details, error) {
+func decodeInstanceInfo(m map[string]interface{}) (*instanceInfo, error) {
 	data, ok := m["json"]
 	if !ok {
 		return nil, fmt.Errorf("missing 'json' key")
@@ -784,11 +814,11 @@ func decodeDetails(m map[string]interface{}) (*Details, error) {
 		return nil, fmt.Errorf("json data is %T, not string", data)
 	}
 
-	var details Details
-	if err := json.Unmarshal([]byte(typed), &details); err != nil {
+	var info instanceInfo
+	if err := json.Unmarshal([]byte(typed), &info); err != nil {
 		return nil, err
 	}
-	return &details, nil
+	return &info, nil
 }
 
 // error wraps the given error into the logger and returns it. Vault likes to

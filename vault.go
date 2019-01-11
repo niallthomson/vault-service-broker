@@ -86,17 +86,14 @@ path "cf/{{ .OrganizationGUID }}/*" {
 
 // GeneratePolicy takes an io.Writer object and template input and renders the
 // resulting template into the writer.
-func GeneratePolicy(w io.Writer, details *Details) error {
-	if !details.NamesPopulated() {
-		tmpl, err := template.New("service").Parse(ServicePolicyTemplateWithoutNames)
-		if err != nil {
-			return err
-		}
-		return tmpl.Execute(w, details)
+func GeneratePolicy(w io.Writer, i *instanceInfo) error {
+	toParse := ServicePolicyTemplateWithoutNames
+	if i.NamesPopulated() {
+		toParse = ServicePolicyTemplateWithNames
 	}
-	tmpl, err := template.New("service").Parse(ServicePolicyTemplateWithNames)
+	tmpl, err := template.New("service").Parse(toParse)
 	if err != nil {
 		return err
 	}
-	return tmpl.Execute(w, details)
+	return tmpl.Execute(w, i)
 }

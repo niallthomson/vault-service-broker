@@ -5,30 +5,6 @@ import (
 	"fmt"
 )
 
-type Details struct {
-	OrganizationName string
-	OrganizationGUID string
-
-	SpaceName string
-	SpaceGUID string
-
-	ServiceInstanceName string
-	ServiceInstanceGUID string
-}
-
-func (d *Details) NamesPopulated() bool {
-	if d.OrganizationName == "" {
-		return false
-	}
-	if d.SpaceName == "" {
-		return false
-	}
-	if d.ServiceInstanceName == "" {
-		return false
-	}
-	return true
-}
-
 type Mount struct {
 	AbsolutePath string
 	Name         string
