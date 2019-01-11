@@ -1,116 +1,103 @@
 package main
 
 import (
-	"fmt"
 	"html/template"
 	"io"
 )
 
 const (
 	ServicePolicyTemplateWithoutNames string = `
-path "cf/{{ .ServiceID }}" {
+path "cf/{{ .ServiceInstanceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .ServiceID }}/*" {
+path "cf/{{ .ServiceInstanceGUID }}/*" {
 	capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .SpaceID }}" {
+path "cf/{{ .SpaceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .SpaceID }}/*" {
+path "cf/{{ .SpaceGUID }}/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .OrgID }}" {
+path "cf/{{ .OrganizationGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .OrgID }}/*" {
+path "cf/{{ .OrganizationGUID }}/*" {
   capabilities = ["read", "list"]
 }
 `
 
 	// ServicePolicyTemplateWithNames is identical to the above, but adds paths for name-ID mount path combos
 	ServicePolicyTemplateWithNames string = `
-path "cf/{{ .ServiceName }}-{{ .ServiceID }}" {
+path "cf/{{ .ServiceInstanceName }}-{{ .ServiceInstanceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .ServiceID }}" {
+path "cf/{{ .ServiceInstanceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .ServiceName }}-{{ .ServiceID }}/*" {
+path "cf/{{ .ServiceInstanceName }}-{{ .ServiceInstanceGUID }}/*" {
 	capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .ServiceID }}/*" {
+path "cf/{{ .ServiceInstanceGUID }}/*" {
 	capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .SpaceName }}-{{ .SpaceID }}" {
+path "cf/{{ .SpaceName }}-{{ .SpaceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .SpaceID }}" {
+path "cf/{{ .SpaceGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .SpaceName }}-{{ .SpaceID }}/*" {
+path "cf/{{ .SpaceName }}-{{ .SpaceGUID }}/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .SpaceID }}/*" {
+path "cf/{{ .SpaceGUID }}/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "cf/{{ .OrgName }}-{{ .OrgID }}" {
+path "cf/{{ .OrganizationName }}-{{ .OrganizationGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .OrgID }}" {
+path "cf/{{ .OrganizationGUID }}" {
   capabilities = ["list"]
 }
 
-path "cf/{{ .OrgName }}-{{ .OrgID }}/*" {
+path "cf/{{ .OrganizationName }}-{{ .OrganizationGUID }}/*" {
   capabilities = ["read", "list"]
 }
 
-path "cf/{{ .OrgID }}/*" {
+path "cf/{{ .OrganizationGUID }}/*" {
   capabilities = ["read", "list"]
 }
 `
 )
 
-// ServicePolicyTemplateInput is used as input to the ServicePolicyTemplateWithoutNames.
-type ServicePolicyTemplateInput struct {
-	ServiceName string
-	ServiceID   string
-	SpaceName   string
-	SpaceID     string
-	OrgName     string
-	OrgID       string
-}
-
+// TODO IS the service ID the same as the service instance ID or instance ID?
 // GeneratePolicy takes an io.Writer object and template input and renders the
 // resulting template into the writer.
-func GeneratePolicy(w io.Writer, i *ServicePolicyTemplateInput) error {
-	if i.ServiceName == "" && i.SpaceName == "" && i.OrgName == "" {
+func GeneratePolicy(w io.Writer, details *Details) error {
+	if !details.NamesPopulated() {
 		tmpl, err := template.New("service").Parse(ServicePolicyTemplateWithoutNames)
 		if err != nil {
 			return err
 		}
-		return tmpl.Execute(w, i)
+		return tmpl.Execute(w, details)
 	}
-	if i.ServiceName != "" && i.SpaceName != "" && i.OrgName != "" {
-		tmpl, err := template.New("service").Parse(ServicePolicyTemplateWithNames)
-		if err != nil {
-			return err
-		}
-		return tmpl.Execute(w, i)
+	tmpl, err := template.New("service").Parse(ServicePolicyTemplateWithNames)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("all or no object names must be provided, but received %+v", i)
+	return tmpl.Execute(w, details)
 }

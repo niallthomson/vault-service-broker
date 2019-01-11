@@ -34,14 +34,6 @@ type bindingInfo struct {
 	stopCh       chan struct{}
 }
 
-type instanceInfo struct {
-	OrganizationName    string
-	OrganizationGUID    string
-	SpaceName           string
-	SpaceGUID           string
-	ServiceInstanceName string
-}
-
 type Broker struct {
 	log         *log.Logger
 	vaultClient *api.Client
@@ -73,7 +65,7 @@ type Broker struct {
 	bindLock sync.Mutex
 
 	// instances is used to map instances to their space and org GUID.
-	instances     map[string]*instanceInfo
+	instances     map[string]*Details
 	instancesLock sync.Mutex
 
 	// stopLock, stopped, and stopCh are used to control the stopping behavior of
@@ -111,7 +103,7 @@ func (b *Broker) Start() error {
 
 	// Ensure instances is initialized
 	if b.instances == nil {
-		b.instances = make(map[string]*instanceInfo)
+		b.instances = make(map[string]*Details)
 	}
 
 	// Ensure the generic secret backend at cf/broker is mounted.
@@ -177,7 +169,7 @@ func (b *Broker) restoreInstance(instanceID string) error {
 
 	// Decode the binding info
 	b.log.Printf("[DEBUG] decoding bind data from %s", path)
-	info, err := decodeInstanceInfo(secret.Data)
+	info, err := decodeDetails(secret.Data)
 	if err != nil {
 		return errors.Wrapf(err, "failed to decode instance info for %s", path)
 	}
@@ -299,59 +291,55 @@ func (b *Broker) Services(ctx context.Context) []brokerapi.Service {
 // a token role called "cf-instanceID" which is periodic. Lastly, we mount
 // the backends for the instance, and optionally for the space and org if
 // they do not exist yet.
-func (b *Broker) Provision(ctx context.Context, instanceID string, details brokerapi.ProvisionDetails, async bool) (brokerapi.ProvisionedServiceSpec, error) {
+func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDetails brokerapi.ProvisionDetails, async bool) (brokerapi.ProvisionedServiceSpec, error) {
 	b.log.Printf("[INFO] provisioning instance %s in %s/%s",
-		instanceID, details.OrganizationGUID, details.SpaceGUID)
+		instanceID, provisionDetails.OrganizationGUID, provisionDetails.SpaceGUID)
 
 	// Create the spec to return
 	var spec brokerapi.ProvisionedServiceSpec
 
-	callCtx := &CallContext{}
+	details := &Details{
+		OrganizationGUID: provisionDetails.OrganizationGUID,
+		SpaceGUID: provisionDetails.SpaceGUID,
+		ServiceInstanceGUID: instanceID,
+	}
 	if b.pcfClient != nil {
 		organization, err := b.pcfClient.GetOrgByGuid(details.OrganizationGUID)
 		if err != nil {
 			return spec, err
 		}
-		callCtx.OrgName = organization.Name
+		details.OrganizationName = organization.Name
 
 		space, err := b.pcfClient.GetSpaceByGuid(details.SpaceGUID)
 		if err != nil {
 			return spec, err
 		}
-		callCtx.SpaceName = space.Name
+		details.SpaceName = space.Name
 
-		serviceInstance, err := b.pcfClient.GetServiceInstanceByGuid(instanceID)
+		serviceInstance, err := b.pcfClient.GetServiceInstanceByGuid(details.ServiceInstanceGUID)
 		if err != nil {
 			return spec, err
 		}
-		callCtx.ServiceInstanceName = serviceInstance.Name
+		details.ServiceInstanceName = serviceInstance.Name
 	}
 
 	// Generate the new policy
 	var buf bytes.Buffer
-	inp := ServicePolicyTemplateInput{
-		ServiceName: callCtx.ServiceInstanceName,
-		ServiceID:   instanceID,
-		SpaceName:   callCtx.SpaceName,
-		SpaceID:     details.SpaceGUID,
-		OrgName:     callCtx.OrgName,
-		OrgID:       details.OrganizationGUID,
-	}
 
-	b.log.Printf("[DEBUG] generating policy for %s", instanceID)
-	if err := GeneratePolicy(&buf, &inp); err != nil {
-		return spec, b.wErrorf(err, "failed to generate policy for %s", instanceID)
+	b.log.Printf("[DEBUG] generating policy for %s", details.ServiceInstanceGUID)
+	if err := GeneratePolicy(&buf, details); err != nil {
+		return spec, b.wErrorf(err, "failed to generate policy for %s", details.ServiceInstanceGUID)
 	}
 
 	// Create the new policy
-	policyName := "cf-" + instanceID
+	policyName := "cf-" + details.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] creating new policy %s", policyName)
 	if err := b.vaultClient.Sys().PutPolicy(policyName, buf.String()); err != nil {
 		return spec, b.wErrorf(err, "failed to create policy %s", policyName)
 	}
 
 	// Create the new token role
-	path := "/auth/token/roles/cf-" + instanceID
+	path := "/auth/token/roles/cf-" + details.ServiceInstanceGUID
 	data := map[string]interface{}{
 		"allowed_policies": policyName,
 		"period":           VaultPeriodicTTL,
@@ -363,7 +351,7 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	}
 
 	// Determine the mounts we need
-	mounts := b.vaultMounts(callCtx, instanceID, details)
+	mounts := b.vaultMounts(details)
 
 	// Mount the backends
 	b.log.Printf("[DEBUG] creating mounts %s", mounts)
@@ -371,21 +359,13 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 		return spec, b.wErrorf(err, "failed to create mounts %s", mounts)
 	}
 
-	// Generate instance info
-	info := &instanceInfo{
-		OrganizationName:    callCtx.OrgName,
-		OrganizationGUID:    details.OrganizationGUID,
-		SpaceName:           callCtx.SpaceName,
-		SpaceGUID:           details.SpaceGUID,
-		ServiceInstanceName: callCtx.ServiceInstanceName,
-	}
-	payload, err := json.Marshal(info)
+	payload, err := json.Marshal(details)
 	if err != nil {
 		return spec, b.wErrorf(err, "failed to encode instance json")
 	}
 
 	// Store the token and metadata in the generic secret backend
-	instancePath := "cf/broker/" + instanceID
+	instancePath := "cf/broker/" + details.ServiceInstanceGUID
 	b.log.Printf("[DEBUG] storing instance metadata at %s", instancePath)
 	if _, err := b.vaultClient.Logical().Write(instancePath, map[string]interface{}{
 		"json": string(payload),
@@ -394,35 +374,35 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	}
 
 	// Save the instance
-	b.log.Printf("[DEBUG] saving instance %s to cache", instanceID)
+	b.log.Printf("[DEBUG] saving instance %s to cache", details.ServiceInstanceGUID)
 	b.instancesLock.Lock()
-	b.instances[instanceID] = info
+	b.instances[details.ServiceInstanceGUID] = details
 	b.instancesLock.Unlock()
 
 	// Done
 	return spec, nil
 }
 
-func (b *Broker) vaultMounts(callCtx *CallContext, instanceID string, details brokerapi.ProvisionDetails) []*Mount {
+func (b *Broker) vaultMounts(details *Details) []*Mount {
 	// Add the default mounts.
 	mounts := []*Mount{
 		{Name: "", GUID: details.OrganizationGUID, Type: KV},
 		{Name: "", GUID: details.SpaceGUID, Type: KV},
-		{Name: "", GUID: instanceID, Type: KV},
-		{Name: "", GUID: instanceID, Type: Transit},
+		{Name: "", GUID: details.ServiceInstanceGUID, Type: KV},
+		{Name: "", GUID: details.ServiceInstanceGUID, Type: Transit},
 	}
 
 	// If the client wasn't populated because it wasn't configured, we're done.
-	if !callCtx.IsPopulated() {
+	if !details.NamesPopulated() {
 		return mounts
 	}
 
 	// Add mounts that include those names.
 	return append(mounts, []*Mount{
-		{Name: callCtx.OrgName, GUID: details.OrganizationGUID, Type: KV},
-		{Name: callCtx.SpaceName, GUID: details.SpaceGUID, Type: KV},
-		{Name: callCtx.ServiceInstanceName, GUID: instanceID, Type: KV},
-		{Name: callCtx.ServiceInstanceName, GUID: instanceID, Type: Transit},
+		{Name: details.OrganizationName, GUID: details.OrganizationGUID, Type: KV},
+		{Name: details.SpaceName, GUID: details.SpaceGUID, Type: KV},
+		{Name: details.ServiceInstanceName, GUID: details.ServiceInstanceGUID, Type: KV},
+		{Name: details.ServiceInstanceName, GUID: details.ServiceInstanceGUID, Type: Transit},
 	}...)
 }
 
@@ -793,7 +773,7 @@ func decodeBindingInfo(m map[string]interface{}) (*bindingInfo, error) {
 	return &info, nil
 }
 
-func decodeInstanceInfo(m map[string]interface{}) (*instanceInfo, error) {
+func decodeDetails(m map[string]interface{}) (*Details, error) {
 	data, ok := m["json"]
 	if !ok {
 		return nil, fmt.Errorf("missing 'json' key")
@@ -804,11 +784,11 @@ func decodeInstanceInfo(m map[string]interface{}) (*instanceInfo, error) {
 		return nil, fmt.Errorf("json data is %T, not string", data)
 	}
 
-	var info instanceInfo
-	if err := json.Unmarshal([]byte(typed), &info); err != nil {
+	var details Details
+	if err := json.Unmarshal([]byte(typed), &details); err != nil {
 		return nil, err
 	}
-	return &info, nil
+	return &details, nil
 }
 
 // error wraps the given error into the logger and returns it. Vault likes to
@@ -829,64 +809,4 @@ func (b *Broker) errorf(s string, f ...interface{}) error {
 // it.
 func (b *Broker) wErrorf(err error, s string, f ...interface{}) error {
 	return b.error(errors.Wrapf(err, s, f...))
-}
-
-// TODO not totally loving this object model
-type CallContext struct {
-	OrgName             string
-	SpaceName           string
-	ServiceInstanceName string
-}
-
-func (c *CallContext) IsPopulated() bool {
-	if c.OrgName == "" {
-		return false
-	}
-	if c.SpaceName == "" {
-		return false
-	}
-	if c.ServiceInstanceName == "" {
-		return false
-	}
-	return true
-}
-
-type SecretEngineType string
-
-const (
-	KV      SecretEngineType = "generic"
-	Transit                  = "transit"
-)
-
-func (s SecretEngineType) PathType() string {
-	switch s {
-	case KV:
-		return "secret"
-	case Transit:
-		return "transit"
-	}
-	return ""
-}
-
-type Mount struct {
-	AbsolutePath string
-	Name         string
-	GUID         string
-	Type         SecretEngineType
-}
-
-func (m *Mount) Path() string {
-	if m.AbsolutePath != "" {
-		return "/cf/" + m.AbsolutePath
-	}
-	path := fmt.Sprintf("%s", m.GUID)
-	if m.Name != "" {
-		path = fmt.Sprintf("%s-%s", m.Name, m.GUID)
-	}
-	return fmt.Sprintf("/cf/%s/%s", path, m.Type.PathType())
-}
-
-func (m *Mount) String() string {
-	b, _ := json.Marshal(m)
-	return fmt.Sprintf("%s", b)
 }

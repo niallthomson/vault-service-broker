@@ -68,7 +68,7 @@ func TestBroker_Bind_Unbind(t *testing.T) {
 
 	// Seed the broker with the results of provisioning an instance
 	// so binding can succeed.
-	env.Broker.instances["instance-id"] = &instanceInfo{
+	env.Broker.instances["instance-id"] = &Details{
 		SpaceGUID:        "space-guid",
 		OrganizationGUID: "organization-guid",
 	}
@@ -413,7 +413,7 @@ func defaultEnvironment(t *testing.T) (*Environment, func()) {
 			planDescription:    "Secure access to Vault's storage and transit backends",
 			vaultAdvertiseAddr: "https://127.0.0.1:8200",
 			vaultRenewToken:    true,
-			instances:          make(map[string]*instanceInfo),
+			instances:          make(map[string]*Details),
 			binds:              make(map[string]*bindingInfo),
 		},
 		InstanceID:       "instance-id",
