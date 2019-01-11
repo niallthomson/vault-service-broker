@@ -5,6 +5,8 @@ import (
 	"fmt"
 )
 
+// TODO this is overkill. It increases the risk of a bug. When the other two PRs are merged,
+// just take a branch off master and continue using maps like the code has been.
 type Mount struct {
 	AbsolutePath string
 	Name         string
