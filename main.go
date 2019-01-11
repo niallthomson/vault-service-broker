@@ -200,6 +200,10 @@ func (c *Configuration) Validate() error {
 	return nil
 }
 
+// credhubProcess iterates over the names of variables as set in the `envconfig` tag
+// on the Configuration. It prepends them with VAULT_SERVICE_BROKER_ and then looks
+// in Credhub to see if they exist. If they do and they have a value, the Configuration
+// is updated with that value for that field.
 func credhubProcess(prefix string, config *Configuration) error {
 
 	client := credhub.New(config.CredhubURL, cleanhttp.DefaultClient())

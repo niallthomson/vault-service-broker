@@ -348,15 +348,13 @@ func testCredhubServer() *httptest.Server {
 			writer.WriteHeader(400)
 		}
 		respBody := fmt.Sprintf(`{
-		  "data": [
-    		{
-      			"type": "password",
-      			"version_created_at": "2017-01-05T01:01:01Z",
-  			    "id": "2993f622-cb1e-4e00-a267-4b23c273bf3d",
-      			"name": "/example-password",
-      			"value": "%s"
-			}
-          ]
+			"data": [{
+				"type": "password",
+				"version_created_at": "2017-01-05T01:01:01Z",
+				"id": "2993f622-cb1e-4e00-a267-4b23c273bf3d",
+				"name": "/example-password",
+				"value": "%s"
+			}]
 		}`, respVal)
 
 		writer.WriteHeader(200)
