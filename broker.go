@@ -299,8 +299,8 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, provisionDeta
 	var spec brokerapi.ProvisionedServiceSpec
 
 	details := &Details{
-		OrganizationGUID: provisionDetails.OrganizationGUID,
-		SpaceGUID: provisionDetails.SpaceGUID,
+		OrganizationGUID:    provisionDetails.OrganizationGUID,
+		SpaceGUID:           provisionDetails.SpaceGUID,
 		ServiceInstanceGUID: instanceID,
 	}
 	if b.pcfClient != nil {
@@ -416,16 +416,16 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 
 	// Unmount the backends
 	mounts := []*Mount{
-		{GUID:instanceID, Type:KV},
-		{GUID:instanceID, Type:Transit},
+		{GUID: instanceID, Type: KV},
+		{GUID: instanceID, Type: Transit},
 	}
 
 	b.instancesLock.Lock()
 	instance, ok := b.instances[instanceID]
 	b.instancesLock.Unlock()
 	if ok {
-		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID:instanceID, Type:KV})
-		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID:instanceID, Type:Transit})
+		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID: instanceID, Type: KV})
+		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID: instanceID, Type: Transit})
 	}
 
 	b.log.Printf("[DEBUG] removing mounts %s", mounts)
