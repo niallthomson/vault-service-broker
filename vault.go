@@ -84,7 +84,6 @@ path "cf/{{ .OrganizationGUID }}/*" {
 `
 )
 
-// TODO IS the service ID the same as the service instance ID or instance ID?
 // GeneratePolicy takes an io.Writer object and template input and renders the
 // resulting template into the writer.
 func GeneratePolicy(w io.Writer, details *Details) error {
