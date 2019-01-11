@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/cloudfoundry-community/go-cfclient"
 	"github.com/hashicorp/vault/api"
 	"github.com/pivotal-cf/brokerapi"
 	"github.com/pkg/errors"
@@ -35,13 +35,17 @@ type bindingInfo struct {
 }
 
 type instanceInfo struct {
-	OrganizationGUID string
-	SpaceGUID        string
+	OrganizationName    string
+	OrganizationGUID    string
+	SpaceName           string
+	SpaceGUID           string
+	ServiceInstanceName string
 }
 
 type Broker struct {
-	log    *log.Logger
-	client *api.Client
+	log         *log.Logger
+	vaultClient *api.Client
+	pcfClient   *cfclient.Client
 
 	// service-specific customization
 	serviceID          string
@@ -111,10 +115,10 @@ func (b *Broker) Start() error {
 	}
 
 	// Ensure the generic secret backend at cf/broker is mounted.
-	mounts := map[string]string{
-		"cf/broker": "generic",
+	mounts := []*Mount{
+		{AbsolutePath: "broker", Type: KV},
 	}
-	b.log.Printf("[DEBUG] creating mounts %s", mapToKV(mounts, ", "))
+	b.log.Printf("[DEBUG] creating mounts %s", mounts)
 	if err := b.idempotentMount(mounts); err != nil {
 		return errors.Wrap(err, "failed to create mounts")
 	}
@@ -162,7 +166,7 @@ func (b *Broker) restoreInstance(instanceID string) error {
 
 	path := "cf/broker/" + instanceID
 
-	secret, err := b.client.Logical().Read(path)
+	secret, err := b.vaultClient.Logical().Read(path)
 	if err != nil {
 		return errors.Wrapf(err, "failed to read instance info at %q", path)
 	}
@@ -189,7 +193,7 @@ func (b *Broker) restoreInstance(instanceID string) error {
 // listDir is used to list a directory
 func (b *Broker) listDir(dir string) ([]string, error) {
 	b.log.Printf("[DEBUG] listing directory %q", dir)
-	secret, err := b.client.Logical().List(dir)
+	secret, err := b.vaultClient.Logical().List(dir)
 	if err != nil {
 		return nil, errors.Wrapf(err, "listDir %s", dir)
 	}
@@ -222,7 +226,7 @@ func (b *Broker) restoreBind(instanceID, bindingID string) error {
 	// Read from Vault
 	path := "cf/broker/" + instanceID + "/" + bindingID
 	b.log.Printf("[DEBUG] reading bind from %s", path)
-	secret, err := b.client.Logical().Read(path)
+	secret, err := b.vaultClient.Logical().Read(path)
 	if err != nil {
 		return errors.Wrapf(err, "failed to read bind info at %q", path)
 	}
@@ -302,12 +306,36 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	// Create the spec to return
 	var spec brokerapi.ProvisionedServiceSpec
 
+	callCtx := &CallContext{}
+	if b.pcfClient != nil {
+		organization, err := b.pcfClient.GetOrgByGuid(details.OrganizationGUID)
+		if err != nil {
+			return spec, err
+		}
+		callCtx.OrgName = organization.Name
+
+		space, err := b.pcfClient.GetSpaceByGuid(details.SpaceGUID)
+		if err != nil {
+			return spec, err
+		}
+		callCtx.SpaceName = space.Name
+
+		serviceInstance, err := b.pcfClient.GetServiceInstanceByGuid(instanceID)
+		if err != nil {
+			return spec, err
+		}
+		callCtx.ServiceInstanceName = serviceInstance.Name
+	}
+
 	// Generate the new policy
 	var buf bytes.Buffer
 	inp := ServicePolicyTemplateInput{
-		ServiceID: instanceID,
-		SpaceID:   details.SpaceGUID,
-		OrgID:     details.OrganizationGUID,
+		ServiceName: callCtx.ServiceInstanceName,
+		ServiceID:   instanceID,
+		SpaceName:   callCtx.SpaceName,
+		SpaceID:     details.SpaceGUID,
+		OrgName:     callCtx.OrgName,
+		OrgID:       details.OrganizationGUID,
 	}
 
 	b.log.Printf("[DEBUG] generating policy for %s", instanceID)
@@ -318,7 +346,7 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	// Create the new policy
 	policyName := "cf-" + instanceID
 	b.log.Printf("[DEBUG] creating new policy %s", policyName)
-	if err := b.client.Sys().PutPolicy(policyName, buf.String()); err != nil {
+	if err := b.vaultClient.Sys().PutPolicy(policyName, buf.String()); err != nil {
 		return spec, b.wErrorf(err, "failed to create policy %s", policyName)
 	}
 
@@ -330,28 +358,26 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 		"renewable":        true,
 	}
 	b.log.Printf("[DEBUG] creating new token role for %s", path)
-	if _, err := b.client.Logical().Write(path, data); err != nil {
+	if _, err := b.vaultClient.Logical().Write(path, data); err != nil {
 		return spec, b.wErrorf(err, "failed to create token role for %s", path)
 	}
 
 	// Determine the mounts we need
-	mounts := map[string]string{
-		"/cf/" + details.OrganizationGUID + "/secret": "generic",
-		"/cf/" + details.SpaceGUID + "/secret":        "generic",
-		"/cf/" + instanceID + "/secret":               "generic",
-		"/cf/" + instanceID + "/transit":              "transit",
-	}
+	mounts := b.vaultMounts(callCtx, instanceID, details)
 
 	// Mount the backends
-	b.log.Printf("[DEBUG] creating mounts %s", mapToKV(mounts, ", "))
+	b.log.Printf("[DEBUG] creating mounts %s", mounts)
 	if err := b.idempotentMount(mounts); err != nil {
-		return spec, b.wErrorf(err, "failed to create mounts %s", mapToKV(mounts, ", "))
+		return spec, b.wErrorf(err, "failed to create mounts %s", mounts)
 	}
 
 	// Generate instance info
 	info := &instanceInfo{
-		OrganizationGUID: details.OrganizationGUID,
-		SpaceGUID:        details.SpaceGUID,
+		OrganizationName:    callCtx.OrgName,
+		OrganizationGUID:    details.OrganizationGUID,
+		SpaceName:           callCtx.SpaceName,
+		SpaceGUID:           details.SpaceGUID,
+		ServiceInstanceName: callCtx.ServiceInstanceName,
 	}
 	payload, err := json.Marshal(info)
 	if err != nil {
@@ -361,7 +387,7 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	// Store the token and metadata in the generic secret backend
 	instancePath := "cf/broker/" + instanceID
 	b.log.Printf("[DEBUG] storing instance metadata at %s", instancePath)
-	if _, err := b.client.Logical().Write(instancePath, map[string]interface{}{
+	if _, err := b.vaultClient.Logical().Write(instancePath, map[string]interface{}{
 		"json": string(payload),
 	}); err != nil {
 		return spec, b.wErrorf(err, "failed to commit instance %s", instancePath)
@@ -377,6 +403,29 @@ func (b *Broker) Provision(ctx context.Context, instanceID string, details broke
 	return spec, nil
 }
 
+func (b *Broker) vaultMounts(callCtx *CallContext, instanceID string, details brokerapi.ProvisionDetails) []*Mount {
+	// Add the default mounts.
+	mounts := []*Mount{
+		{Name: "", GUID: details.OrganizationGUID, Type: KV},
+		{Name: "", GUID: details.SpaceGUID, Type: KV},
+		{Name: "", GUID: instanceID, Type: KV},
+		{Name: "", GUID: instanceID, Type: Transit},
+	}
+
+	// If the client wasn't populated because it wasn't configured, we're done.
+	if !callCtx.IsPopulated() {
+		return mounts
+	}
+
+	// Add mounts that include those names.
+	return append(mounts, []*Mount{
+		{Name: callCtx.OrgName, GUID: details.OrganizationGUID, Type: KV},
+		{Name: callCtx.SpaceName, GUID: details.SpaceGUID, Type: KV},
+		{Name: callCtx.ServiceInstanceName, GUID: instanceID, Type: KV},
+		{Name: callCtx.ServiceInstanceName, GUID: instanceID, Type: Transit},
+	}...)
+}
+
 // Deprovision is used to remove a tenant of Vault. We use this to
 // remove all the backends of the tenant, delete the token role, and policy.
 func (b *Broker) Deprovision(ctx context.Context, instanceID string, details brokerapi.DeprovisionDetails, async bool) (brokerapi.DeprovisionServiceSpec, error) {
@@ -385,6 +434,7 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 	// Create the spec to return
 	var spec brokerapi.DeprovisionServiceSpec
 
+	// TODO need to add code for the names in paths
 	// Unmount the backends
 	mounts := []string{
 		"/cf/" + instanceID + "/secret",
@@ -398,21 +448,21 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 	// Delete the token role
 	path := "/auth/token/roles/cf-" + instanceID
 	b.log.Printf("[DEBUG] deleting token role %s", path)
-	if _, err := b.client.Logical().Delete(path); err != nil {
+	if _, err := b.vaultClient.Logical().Delete(path); err != nil {
 		return spec, b.wErrorf(err, "failed to delete token role %s", path)
 	}
 
 	// Delete the token policy
 	policyName := "cf-" + instanceID
 	b.log.Printf("[DEBUG] deleting policy %s", policyName)
-	if err := b.client.Sys().DeletePolicy(policyName); err != nil {
+	if err := b.vaultClient.Sys().DeletePolicy(policyName); err != nil {
 		return spec, b.wErrorf(err, "failed to delete policy %s", policyName)
 	}
 
 	// Delete the instance info
 	instancePath := "cf/broker/" + instanceID
 	b.log.Printf("[DEBUG] deleting instance info at %s", instancePath)
-	if _, err := b.client.Logical().Delete(instancePath); err != nil {
+	if _, err := b.vaultClient.Logical().Delete(instancePath); err != nil {
 		return spec, b.wErrorf(err, "failed to delete instance info at %s", instancePath)
 	}
 
@@ -441,7 +491,7 @@ func (b *Broker) Bind(ctx context.Context, instanceID, bindingID string, details
 	// Create the token
 	renewable := true
 	b.log.Printf("[DEBUG] creating token with role %s", roleName)
-	secret, err := b.client.Auth().Token().CreateWithRole(&api.TokenCreateRequest{
+	secret, err := b.vaultClient.Auth().Token().CreateWithRole(&api.TokenCreateRequest{
 		Policies:    []string{roleName},
 		Metadata:    map[string]string{"cf-instance-id": instanceID, "cf-binding-id": bindingID},
 		DisplayName: "cf-bind-" + bindingID,
@@ -479,11 +529,11 @@ func (b *Broker) Bind(ctx context.Context, instanceID, bindingID string, details
 	// Store the token and metadata in the generic secret backend
 	path := "cf/broker/" + instanceID + "/" + bindingID
 	b.log.Printf("[DEBUG] storing binding metadata at %s", path)
-	if _, err := b.client.Logical().Write(path, map[string]interface{}{
+	if _, err := b.vaultClient.Logical().Write(path, map[string]interface{}{
 		"json": string(data),
 	}); err != nil {
 		a := secret.Auth.Accessor
-		if err := b.client.Auth().Token().RevokeAccessor(a); err != nil {
+		if err := b.vaultClient.Auth().Token().RevokeAccessor(a); err != nil {
 			b.log.Printf("[WARN] failed to revoke accessor %s", a)
 		}
 		return binding, errors.Wrapf(err, "failed to commit binding %s", path)
@@ -526,7 +576,7 @@ func (b *Broker) Unbind(ctx context.Context, instanceID, bindingID string, detai
 	// Read the binding info
 	path := "cf/broker/" + instanceID + "/" + bindingID
 	b.log.Printf("[DEBUG] reading %s", path)
-	secret, err := b.client.Logical().Read(path)
+	secret, err := b.vaultClient.Logical().Read(path)
 	if err != nil {
 		return b.wErrorf(err, "failed to read binding info for %s", path)
 	}
@@ -544,13 +594,13 @@ func (b *Broker) Unbind(ctx context.Context, instanceID, bindingID string, detai
 	// Revoke the token
 	a := info.Accessor
 	b.log.Printf("[DEBUG] revoking accessor %s for path %s", a, path)
-	if err := b.client.Auth().Token().RevokeAccessor(a); err != nil {
+	if err := b.vaultClient.Auth().Token().RevokeAccessor(a); err != nil {
 		return b.wErrorf(err, "failed to revoke accessor %s", a)
 	}
 
 	// Delete the binding info
 	b.log.Printf("[DEBUG] deleting binding info at %s", path)
-	if _, err := b.client.Logical().Delete(path); err != nil {
+	if _, err := b.vaultClient.Logical().Delete(path); err != nil {
 		return b.wErrorf(err, "failed to delete binding info at %s", path)
 	}
 
@@ -585,10 +635,10 @@ func (b *Broker) LastOperation(ctx context.Context, instanceID, operationData st
 // idempotentMount takes a list of mounts and their desired paths and mounts the
 // backend at that path. The key is the path and the value is the type of
 // backend to mount.
-func (b *Broker) idempotentMount(m map[string]string) error {
+func (b *Broker) idempotentMount(m []*Mount) error {
 	b.mountMutex.Lock()
 	defer b.mountMutex.Unlock()
-	result, err := b.client.Sys().ListMounts()
+	result, err := b.vaultClient.Sys().ListMounts()
 	if err != nil {
 		return err
 	}
@@ -600,13 +650,13 @@ func (b *Broker) idempotentMount(m map[string]string) error {
 		mounts[k] = struct{}{}
 	}
 
-	for k, v := range m {
-		k = strings.Trim(k, "/")
+	for _, mount := range m {
+		k := strings.Trim(mount.Path(), "/")
 		if _, ok := mounts[k]; ok {
 			continue
 		}
-		if err := b.client.Sys().Mount(k, &api.MountInput{
-			Type: v,
+		if err := b.vaultClient.Sys().Mount(k, &api.MountInput{
+			Type: fmt.Sprintf("%s", mount.Type),
 		}); err != nil {
 			return err
 		}
@@ -614,12 +664,13 @@ func (b *Broker) idempotentMount(m map[string]string) error {
 	return nil
 }
 
+// TODO should this be taking in []*Mount?
 // idempotentUnmount takes a list of mount paths and removes them if and only
 // if they currently exist.
 func (b *Broker) idempotentUnmount(l []string) error {
 	b.mountMutex.Lock()
 	defer b.mountMutex.Unlock()
-	result, err := b.client.Sys().ListMounts()
+	result, err := b.vaultClient.Sys().ListMounts()
 	if err != nil {
 		return err
 	}
@@ -636,7 +687,7 @@ func (b *Broker) idempotentUnmount(l []string) error {
 		if _, ok := mounts[k]; !ok {
 			continue
 		}
-		if err := b.client.Sys().Unmount(k); err != nil {
+		if err := b.vaultClient.Sys().Unmount(k); err != nil {
 			return err
 		}
 	}
@@ -652,13 +703,13 @@ func (b *Broker) renewAuth(token, accessor string, stopCh <-chan struct{}) {
 
 	// Use renew-self instead of lookup here because we want the freshest renew
 	// and we can find out if it's renewable or not.
-	secret, err := b.client.Auth().Token().RenewTokenAsSelf(token, 0)
+	secret, err := b.vaultClient.Auth().Token().RenewTokenAsSelf(token, 0)
 	if err != nil {
 		b.log.Printf("[ERR] renew-token (%s): error looking up self: %s", accessor, err)
 		return
 	}
 
-	renewer, err := b.client.NewRenewer(&api.RenewerInput{
+	renewer, err := b.vaultClient.NewRenewer(&api.RenewerInput{
 		Secret: secret,
 	})
 	if err != nil {
@@ -695,9 +746,9 @@ func (b *Broker) renewAuth(token, accessor string, stopCh <-chan struct{}) {
 // renewVaultToken is a convenience wrapper around renewAuth which looks up
 // metadata about the token attached to this broker and starts the renewer.
 func (b *Broker) renewVaultToken() {
-	secret, err := b.client.Auth().Token().LookupSelf()
+	secret, err := b.vaultClient.Auth().Token().LookupSelf()
 	if err != nil {
-		b.log.Printf("[ERR] renew-token: failed to lookup client vault token: %s", err)
+		b.log.Printf("[ERR] renew-token: failed to lookup vaultClient vault token: %s", err)
 		return
 	}
 	if expireTime, ok := secret.Data["expire_time"]; ok && expireTime == nil {
@@ -705,9 +756,9 @@ func (b *Broker) renewVaultToken() {
 		return
 	}
 
-	secret, err = b.client.Auth().Token().RenewSelf(0)
+	secret, err = b.vaultClient.Auth().Token().RenewSelf(0)
 	if err != nil {
-		b.log.Printf("[ERR] renew-token: failed to renew client vault token: %s", err)
+		b.log.Printf("[ERR] renew-token: failed to renew vaultClient vault token: %s", err)
 		return
 	}
 	if secret.Auth == nil {
@@ -753,20 +804,6 @@ func decodeInstanceInfo(m map[string]interface{}) (*instanceInfo, error) {
 	return &info, nil
 }
 
-func mapToKV(m map[string]string, joiner string) string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	r := make([]string, len(keys))
-	for i, k := range keys {
-		r[i] = fmt.Sprintf("%s=%s", k, m[k])
-	}
-	return strings.Join(r, joiner)
-}
-
 // error wraps the given error into the logger and returns it. Vault likes to
 // have multiline error messages, which don't mix well with the service broker's
 // logging model. Here we strip any newline characters and replace them with a
@@ -785,4 +822,64 @@ func (b *Broker) errorf(s string, f ...interface{}) error {
 // it.
 func (b *Broker) wErrorf(err error, s string, f ...interface{}) error {
 	return b.error(errors.Wrapf(err, s, f...))
+}
+
+// TODO not totally loving this object model
+type CallContext struct {
+	OrgName             string
+	SpaceName           string
+	ServiceInstanceName string
+}
+
+func (c *CallContext) IsPopulated() bool {
+	if c.OrgName == "" {
+		return false
+	}
+	if c.SpaceName == "" {
+		return false
+	}
+	if c.ServiceInstanceName == "" {
+		return false
+	}
+	return true
+}
+
+type SecretEngineType string
+
+const (
+	KV      SecretEngineType = "generic"
+	Transit                  = "transit"
+)
+
+func (s SecretEngineType) PathType() string {
+	switch s {
+	case KV:
+		return "secret"
+	case Transit:
+		return "transit"
+	}
+	return ""
+}
+
+type Mount struct {
+	AbsolutePath string
+	Name         string
+	GUID         string
+	Type         SecretEngineType
+}
+
+func (m *Mount) Path() string {
+	if m.AbsolutePath != "" {
+		return "/cf/" + m.AbsolutePath
+	}
+	path := fmt.Sprintf("%s", m.GUID)
+	if m.Name != "" {
+		path = fmt.Sprintf("%s-%s", m.Name, m.GUID)
+	}
+	return fmt.Sprintf("/cf/%s/%s", path, m.Type.PathType())
+}
+
+func (m *Mount) String() string {
+	b, _ := json.Marshal(m)
+	return fmt.Sprintf("%s", b)
 }

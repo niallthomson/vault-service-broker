@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"code.cloudfoundry.org/lager"
+	"github.com/cloudfoundry-community/go-cfclient"
 	"github.com/cloudfoundry-community/go-credhub"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/vault/api"
@@ -35,17 +36,27 @@ func main() {
 	vaultClientConfig := api.DefaultConfig()
 	vaultClientConfig.HttpClient = cleanhttp.DefaultClient()
 
-	client, err := api.NewClient(vaultClientConfig)
+	vaultClient, err := api.NewClient(vaultClientConfig)
 	if err != nil {
-		logger.Fatal("[ERR] failed to create api client", err)
+		logger.Fatal("[ERR] failed to create vault api client", err)
 	}
-	client.SetAddress(config.VaultAddr)
-	client.SetToken(config.VaultToken)
+	vaultClient.SetAddress(config.VaultAddr)
+	vaultClient.SetToken(config.VaultToken)
+
+	// Setup the PCF client
+	// TODO do they need to pass in auth info here? username, password, token, apiaddr, etc?
+	// TODO and if they don't provide it, should it be required?
+	// TODO if they don't configure this client, it should be nil - code looks for that later.
+	pcfClient, err := cfclient.NewClient(cfclient.DefaultConfig())
+	if err != nil {
+		logger.Fatal("[ERR] failed to create pcf api client", err)
+	}
 
 	// Setup the broker
 	broker := &Broker{
-		log:    logger,
-		client: client,
+		log:         logger,
+		vaultClient: vaultClient,
+		pcfClient:   pcfClient,
 
 		serviceID:          config.ServiceID,
 		serviceName:        config.ServiceName,
