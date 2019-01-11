@@ -434,13 +434,21 @@ func (b *Broker) Deprovision(ctx context.Context, instanceID string, details bro
 	// Create the spec to return
 	var spec brokerapi.DeprovisionServiceSpec
 
-	// TODO need to add code for the names in paths
 	// Unmount the backends
-	mounts := []string{
-		"/cf/" + instanceID + "/secret",
-		"/cf/" + instanceID + "/transit",
+	mounts := []*Mount{
+		{GUID:instanceID, Type:KV},
+		{GUID:instanceID, Type:Transit},
 	}
-	b.log.Printf("[DEBUG] removing mounts %s", strings.Join(mounts, ", "))
+
+	b.instancesLock.Lock()
+	instance, ok := b.instances[instanceID]
+	b.instancesLock.Unlock()
+	if ok {
+		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID:instanceID, Type:KV})
+		mounts = append(mounts, &Mount{Name: instance.ServiceInstanceName, GUID:instanceID, Type:Transit})
+	}
+
+	b.log.Printf("[DEBUG] removing mounts %s", mounts)
 	if err := b.idempotentUnmount(mounts); err != nil {
 		return spec, b.wErrorf(err, "failed to remove mounts")
 	}
@@ -635,27 +643,27 @@ func (b *Broker) LastOperation(ctx context.Context, instanceID, operationData st
 // idempotentMount takes a list of mounts and their desired paths and mounts the
 // backend at that path. The key is the path and the value is the type of
 // backend to mount.
-func (b *Broker) idempotentMount(m []*Mount) error {
+func (b *Broker) idempotentMount(mounts []*Mount) error {
 	b.mountMutex.Lock()
 	defer b.mountMutex.Unlock()
-	result, err := b.vaultClient.Sys().ListMounts()
+	vaultMountPaths, err := b.vaultClient.Sys().ListMounts()
 	if err != nil {
 		return err
 	}
 
 	// Strip all leading and trailing things
-	mounts := make(map[string]struct{})
-	for k := range result {
-		k = strings.Trim(k, "/")
-		mounts[k] = struct{}{}
+	mountPaths := make(map[string]struct{})
+	for vaultMount := range vaultMountPaths {
+		vaultMount = strings.Trim(vaultMount, "/")
+		mountPaths[vaultMount] = struct{}{}
 	}
 
-	for _, mount := range m {
-		k := strings.Trim(mount.Path(), "/")
-		if _, ok := mounts[k]; ok {
+	for _, mount := range mounts {
+		mountPath := strings.Trim(mount.Path(), "/")
+		if _, ok := mountPaths[mountPath]; ok {
 			continue
 		}
-		if err := b.vaultClient.Sys().Mount(k, &api.MountInput{
+		if err := b.vaultClient.Sys().Mount(mountPath, &api.MountInput{
 			Type: fmt.Sprintf("%s", mount.Type),
 		}); err != nil {
 			return err
@@ -664,30 +672,29 @@ func (b *Broker) idempotentMount(m []*Mount) error {
 	return nil
 }
 
-// TODO should this be taking in []*Mount?
 // idempotentUnmount takes a list of mount paths and removes them if and only
 // if they currently exist.
-func (b *Broker) idempotentUnmount(l []string) error {
+func (b *Broker) idempotentUnmount(mounts []*Mount) error {
 	b.mountMutex.Lock()
 	defer b.mountMutex.Unlock()
-	result, err := b.vaultClient.Sys().ListMounts()
+	vaultMountPaths, err := b.vaultClient.Sys().ListMounts()
 	if err != nil {
 		return err
 	}
 
 	// Strip all leading and trailing things
-	mounts := make(map[string]struct{})
-	for k := range result {
-		k = strings.Trim(k, "/")
-		mounts[k] = struct{}{}
+	mountPaths := make(map[string]struct{})
+	for vaultMount := range vaultMountPaths {
+		vaultMount = strings.Trim(vaultMount, "/")
+		mountPaths[vaultMount] = struct{}{}
 	}
 
-	for _, k := range l {
-		k = strings.Trim(k, "/")
-		if _, ok := mounts[k]; !ok {
+	for _, mount := range mounts {
+		mountPath := strings.Trim(mount.Path(), "/")
+		if _, ok := mountPaths[mountPath]; !ok {
 			continue
 		}
-		if err := b.vaultClient.Sys().Unmount(k); err != nil {
+		if err := b.vaultClient.Sys().Unmount(mountPath); err != nil {
 			return err
 		}
 	}
